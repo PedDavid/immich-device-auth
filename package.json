@@ -1,0 +1,31 @@
+{
+  "name": "immich-device-auth",
+  "version": "0.1.0",
+  "description": "Proof of concept: OAuth 2.0 device-authorization flow (RFC 8628) that mints scoped, expiring Immich API keys after the user approves on an already signed-in device.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node --disable-warning=ExperimentalWarning dist/index.js",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "demo": "tsx examples/demo-client.ts",
+    "mock-immich": "tsx test/mock-immich.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.6",
+    "@immich/sdk": "^3.3.6",
+    "hono": "^4.13.16",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "@types/qrcode": "^1.5.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
