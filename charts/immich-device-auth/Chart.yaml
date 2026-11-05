@@ -1,0 +1,17 @@
+apiVersion: v2
+name: immich-device-auth
+description: Device-authorization broker that gives third-party Immich apps scoped, expiring API keys via a QR code.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/PedDavid/immich-device-auth
+sources:
+  - https://github.com/PedDavid/immich-device-auth
+keywords:
+  - immich
+  - oauth
+  - device-flow
+  - rfc8628
+maintainers:
+  - name: PedDavid
+    url: https://github.com/PedDavid

@@ -1,0 +1,22 @@
+immich-device-auth is deploying.
+
+1. Allow this redirect URI on Immich's OAuth client in your identity provider:
+
+     {{ include "immich-device-auth.publicUrl" . }}/device/oauth/callback
+
+   OAuth must also be enabled in Immich (Administration > Settings > Authentication).
+   Without both, users can't approve requests.
+
+2. Make sure phones can reach {{ include "immich-device-auth.publicUrl" . }}
+{{- if not .Values.ingress.enabled }}
+   (ingress.enabled is false: expose the "{{ include "immich-device-auth.fullname" . }}" Service yourself).
+{{- end }}
+
+3. Try it from any machine:
+
+     curl -X POST {{ include "immich-device-auth.publicUrl" . }}/device/code \
+       -d client_name="Test app" -d scope="album.read" -d ttl=600
+
+   Open the returned verification_uri_complete on your phone and approve.
+
+Logs: kubectl logs -n {{ .Release.Namespace }} deploy/{{ include "immich-device-auth.fullname" . }}

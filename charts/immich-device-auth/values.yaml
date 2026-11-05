@@ -1,0 +1,104 @@
+# -- Immich server the broker talks to.
+immich:
+  # -- Immich URL as reachable from inside the cluster, without /api. Required.
+  # Example: http://immich-server.immich.svc.cluster.local:2283
+  url: ""
+  # -- Immich URL handed to apps after approval. Defaults to `immich.url`;
+  # set it when apps reach Immich at a different (public) address.
+  publicUrl: ""
+
+# -- Public URL of the broker, the address phones open after scanning the QR
+# code. Required. The identity provider must allow
+# `<publicUrl>/device/oauth/callback` as a redirect URI.
+publicUrl: ""
+
+grants:
+  # -- Key lifetime when the app doesn't ask for one, in seconds.
+  defaultTtlSeconds: 3600
+  # -- Longest key lifetime an app can get, in seconds.
+  maxTtlSeconds: 604800
+  # -- How long a QR code stays valid, in seconds.
+  deviceCodeTtlSeconds: 600
+  # -- Minimum seconds between token polls.
+  pollIntervalSeconds: 5
+  # -- How often expired keys are deleted, in seconds.
+  sweepIntervalSeconds: 30
+  # -- Let Immich enforce key expiry (only once Immich supports expiring API keys).
+  nativeKeyExpiry: false
+
+# -- Read client IPs from X-Forwarded-For for rate limiting. Keep on behind an
+# ingress controller; turn off if the Service is exposed directly.
+trustProxy: true
+# -- Wrong codes allowed per IP per 10 minutes.
+maxCodeLookupFailures: 20
+
+# -- Extra environment variables for the container.
+extraEnv: []
+
+image:
+  repository: ghcr.io/peddavid/immich-device-auth
+  # -- Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# -- Issued grants are kept in SQLite on this volume so keys still get revoked
+# after a restart. The broker runs as a single replica because of this.
+persistence:
+  enabled: true
+  # -- Use an existing PVC instead of creating one.
+  existingClaim: ""
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 256Mi
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # cert-manager.io/cluster-issuer: letsencrypt
+  # -- Defaults to the host of `publicUrl`.
+  host: ""
+  tls: []
+  #  - secretName: immich-device-auth-tls
+  #    hosts:
+  #      - device.photos.example.com
+
+serviceAccount:
+  create: false
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

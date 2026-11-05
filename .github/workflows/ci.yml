@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CHART_DIR: charts/immich-device-auth
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  # Builds the image and installs the chart in a throwaway cluster, so both
+  # artifacts are known to work together before anything is published.
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: azure/setup-helm@v4
+      - name: Lint chart
+        run: |
+          helm lint "$CHART_DIR" -f "$CHART_DIR/ci/test-values.yaml"
+          # Required values must be enforced.
+          if helm template t "$CHART_DIR" >/dev/null 2>&1; then
+            echo "::error::chart rendered without required values"; exit 1
+          fi
+          helm template t "$CHART_DIR" -f "$CHART_DIR/ci/test-values.yaml" > /dev/null
+      - name: Build image
+        run: docker build -t immich-device-auth:ci .
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: ci
+      - name: Install chart
+        run: |
+          kind load docker-image immich-device-auth:ci --name ci
+          helm install device "$CHART_DIR" -n device --create-namespace \
+            -f "$CHART_DIR/ci/test-values.yaml" --wait --timeout 3m
+      - name: Smoke test
+        run: |
+          kubectl -n device port-forward svc/device-immich-device-auth 8080:80 >/dev/null 2>&1 &
+          sleep 3
+          curl -fsS http://localhost:8080/healthz
+          curl -fsS -X POST http://localhost:8080/device/code \
+            -d client_name=CI -d scope=album.read -d ttl=600 | tee code.json
+          grep -q '"verification_uri":"https://device.photos.example.com/device"' code.json
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          kubectl -n device get all,pvc,ingress
+          kubectl -n device describe pods
+          kubectl -n device logs deploy/device-immich-device-auth --tail=100 || true
+
+  image:
+    if: github.event_name == 'push'
+    needs: [test, chart]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=sha
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          labels: |
+            org.opencontainers.image.description=Device-authorization broker for scoped, expiring Immich API keys
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  chart-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: azure/setup-helm@v4
+      - name: Check versions match the tag
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          chart=$(awk '/^version:/ {print $2}' "$CHART_DIR/Chart.yaml")
+          app=$(awk '/^appVersion:/ {gsub(/"/, "", $2); print $2}' "$CHART_DIR/Chart.yaml")
+          pkg=$(node -p "require('./package.json').version")
+          echo "tag=$tag chart=$chart appVersion=$app package=$pkg"
+          [ "$tag" = "$chart" ] && [ "$tag" = "$app" ] && [ "$tag" = "$pkg" ] \
+            || { echo "::error::tag, chart version, appVersion and package.json version must match"; exit 1; }
+      - name: Package and push chart
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm package "$CHART_DIR" -d dist
+          helm push dist/immich-device-auth-*.tgz "oci://ghcr.io/$owner/charts"

@@ -1,0 +1,14 @@
+# Values used by CI to install the chart in a throwaway kind cluster.
+immich:
+  url: http://immich-server.immich.svc.cluster.local:2283
+publicUrl: https://device.photos.example.com
+ingress:
+  enabled: true
+  className: nginx
+  tls:
+    - secretName: device-tls
+      hosts: [device.photos.example.com]
+image:
+  repository: immich-device-auth
+  tag: ci
+  pullPolicy: Never

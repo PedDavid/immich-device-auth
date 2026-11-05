@@ -92,9 +92,47 @@ npm test                                      # end-to-end tests against the moc
 The mock's fake identity provider signs everyone in as `demo@immich.app`
 without asking, so tapping Approve completes straight away.
 
-Against a real Immich, point `IMMICH_URL` at it, set `PUBLIC_URL` to the
-address phones will use to reach the broker, and allowlist the callback URL
-(next section).
+## Deploy
+
+Before deploying, in your identity provider allow
+`<PUBLIC_URL>/device/oauth/callback` as a redirect URI on Immich's OAuth
+client, and make sure OAuth is enabled in Immich.
+
+### Kubernetes (Helm)
+
+```sh
+helm install device-auth oci://ghcr.io/peddavid/charts/immich-device-auth \
+  --version 0.1.0 -n immich \
+  --set immich.url=http://immich-server.immich.svc.cluster.local:2283 \
+  --set immich.publicUrl=https://photos.example.com \
+  --set publicUrl=https://device.photos.example.com \
+  --set ingress.enabled=true --set ingress.className=nginx
+```
+
+The chart runs one replica with a small PVC for issued grants (kept on
+uninstall, since losing it means expired keys are never deleted). See
+[`values.yaml`](charts/immich-device-auth/values.yaml) for TLS, TTLs and the
+rest.
+
+### Docker
+
+```sh
+docker run -d --name immich-device-auth -p 3080:3080 \
+  -v immich-device-auth:/data \
+  -e IMMICH_URL=http://immich-server:2283 \
+  -e IMMICH_PUBLIC_URL=https://photos.example.com \
+  -e PUBLIC_URL=https://device.photos.example.com \
+  ghcr.io/peddavid/immich-device-auth:0.1.0
+```
+
+Images are built for `linux/amd64` and `linux/arm64`. Tags: `0.1.0`, `0.1`,
+`main` (latest commit on main), `sha-<commit>`.
+
+### Releasing
+
+Bump the version in `package.json` and `charts/immich-device-auth/Chart.yaml`
+(`version` and `appVersion`), then push a matching `vX.Y.Z` tag. CI tests the
+code, installs the chart in a kind cluster, and publishes the image and chart.
 
 ## API for client apps
 

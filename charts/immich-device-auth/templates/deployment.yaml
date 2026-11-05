@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "immich-device-auth.fullname" . }}
+  labels:
+    {{- include "immich-device-auth.labels" . | nindent 4 }}
+spec:
+  # Pending approvals live in memory and grants in SQLite: exactly one replica.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "immich-device-auth.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "immich-device-auth.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "immich-device-auth.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: broker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: PORT
+              value: "3080"
+            - name: IMMICH_URL
+              value: {{ required "immich.url is required, e.g. http://immich-server.immich.svc.cluster.local:2283" .Values.immich.url | trimSuffix "/" | quote }}
+            {{- with .Values.immich.publicUrl }}
+            - name: IMMICH_PUBLIC_URL
+              value: {{ . | trimSuffix "/" | quote }}
+            {{- end }}
+            - name: PUBLIC_URL
+              value: {{ include "immich-device-auth.publicUrl" . | quote }}
+            - name: DATABASE_PATH
+              value: /data/device-auth.db
+            - name: DEFAULT_TTL_SECONDS
+              value: {{ .Values.grants.defaultTtlSeconds | int | quote }}
+            - name: MAX_TTL_SECONDS
+              value: {{ .Values.grants.maxTtlSeconds | int | quote }}
+            - name: DEVICE_CODE_TTL_SECONDS
+              value: {{ .Values.grants.deviceCodeTtlSeconds | int | quote }}
+            - name: POLL_INTERVAL_SECONDS
+              value: {{ .Values.grants.pollIntervalSeconds | int | quote }}
+            - name: SWEEP_INTERVAL_SECONDS
+              value: {{ .Values.grants.sweepIntervalSeconds | int | quote }}
+            - name: IMMICH_NATIVE_KEY_EXPIRY
+              value: {{ .Values.grants.nativeKeyExpiry | quote }}
+            - name: TRUST_PROXY
+              value: {{ .Values.trustProxy | quote }}
+            - name: MAX_CODE_LOOKUP_FAILURES
+              value: {{ .Values.maxCodeLookupFailures | int | quote }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 3080
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (include "immich-device-auth.fullname" .) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
