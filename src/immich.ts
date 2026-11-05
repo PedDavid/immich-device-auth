@@ -59,8 +59,8 @@ export class ImmichClient {
     return body as T;
   }
 
-  login(email: string, password: string) {
-    return this.request<LoginResult>('POST', '/auth/login', { body: { email, password } });
+  getFeatures() {
+    return this.request<{ oauth: boolean; passwordLogin: boolean }>('GET', '/server/features');
   }
 
   startOAuth(params: { redirectUri: string; state: string; codeChallenge: string }) {

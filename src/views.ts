@@ -33,7 +33,7 @@ const STYLE = `
   button, a.button { flex: 1; display: inline-block; text-align: center; padding: 12px; font: 600 1rem system-ui, sans-serif;
            border-radius: 10px; border: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; text-decoration: none; }
   button.primary, a.button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
-  .divider { text-align: center; color: var(--muted); font-size: .85rem; margin: 18px 0 0; }
+  .hint { text-align: center; font-size: .85rem; margin-top: 14px; }
   footer { text-align: center; color: var(--muted); font-size: .8rem; margin-top: 20px; }
 `;
 
@@ -84,11 +84,12 @@ export const enterCodePage = (error?: string) =>
     </div>`,
   );
 
-export const approvePage = (request: DeviceRequest, options: { oauthEnabled: boolean; error?: string; email?: string }) => {
+export const approvePage = (request: DeviceRequest, options: { error?: string } = {}) => {
   const perms = groupPermissions(request.permissions)
     .map(([resource, actions]) => `<li><b>${escape(resource)}</b><span>${escape(actions.join(', ') || 'full')}</span></li>`)
     .join('');
   const code = formatUserCode(request.userCode);
+  const approveHref = `/device/oauth/start?code=${encodeURIComponent(request.userCode)}&form_token=${encodeURIComponent(request.formToken)}`;
 
   return page(
     `Approve ${request.clientName}?`,
@@ -102,24 +103,13 @@ export const approvePage = (request: DeviceRequest, options: { oauthEnabled: boo
       <p class="muted">It will be able to:</p>
       <ul class="perms">${perms}</ul>
       ${options.error ? `<p class="error">${escape(options.error)}</p>` : ''}
-      <form method="post" action="/device/approve">
+      <form method="post" action="/device/deny" class="row">
         <input type="hidden" name="code" value="${escape(request.userCode)}">
         <input type="hidden" name="form_token" value="${escape(request.formToken)}">
-        <label for="email">Immich email</label>
-        <input id="email" name="email" type="email" autocomplete="username" value="${escape(options.email ?? '')}" required>
-        <label for="password">Password</label>
-        <input id="password" name="password" type="password" autocomplete="current-password" required>
-        <div class="row">
-          <button type="submit" name="decision" value="deny" formnovalidate>Deny</button>
-          <button class="primary" type="submit" name="decision" value="approve">Approve</button>
-        </div>
+        <button type="submit">Deny</button>
+        <a class="button primary" href="${escape(approveHref)}">Approve</a>
       </form>
-      ${
-        options.oauthEnabled
-          ? `<p class="divider">or</p>
-             <div class="row"><a class="button" href="/device/oauth/start?code=${encodeURIComponent(request.userCode)}&amp;form_token=${encodeURIComponent(request.formToken)}">Approve with OAuth sign-in</a></div>`
-          : ''
-      }
+      <p class="muted hint">Approving takes you to your Immich sign-in. Your password never passes through this page.</p>
     </div>`,
   );
 };

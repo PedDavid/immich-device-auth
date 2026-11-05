@@ -6,7 +6,7 @@ by showing a QR code, instead of asking users to paste a never-expiring key.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/approval-dark.png">
-    <img src="docs/approval-light.png" alt="Approval page on a phone: Allow Kitchen Photo Frame? It lists album read, asset view and download, timeline read, for 1 day, with sign-in fields and Deny and Approve buttons" width="300">
+    <img src="docs/approval-light.png" alt="Approval page on a phone: Allow Kitchen Photo Frame? It lists album read, asset view and download, timeline read, for 1 day, with Deny and Approve buttons" width="300">
   </picture>
   <br><em>What the user sees after scanning the QR code</em>
 </p>
@@ -16,6 +16,10 @@ device authorization grant ([RFC 8628](https://www.rfc-editor.org/rfc/rfc8628)),
 the flow TVs and CLIs use for "scan this code to sign in". It needs no changes
 to Immich; everything goes through Immich's public API.
 
+**Requires an Immich server with OAuth (OIDC) sign-in enabled.** Users approve
+by signing in through Immich's identity provider, so their password never
+passes through this service.
+
 ## How it works
 
 ```mermaid
@@ -24,6 +28,7 @@ sequenceDiagram
   participant Broker as immich-device-auth
   participant Phone as User's phone
   participant Immich
+  participant IdP as Identity provider
 
   App->>Broker: POST /device/code (client_name, scope, ttl)
   Broker-->>App: device_code, user_code, verification_uri_complete
@@ -34,8 +39,13 @@ sequenceDiagram
   end
   Phone->>Broker: Open approval page (scanned QR)
   Broker-->>Phone: "Allow Kitchen Photo Frame? It will be able to: album read, …"
-  Phone->>Broker: Approve + Immich sign-in (password or OAuth)
-  Broker->>Immich: POST /auth/login
+  Phone->>Broker: Tap Approve
+  Broker->>Immich: POST /oauth/authorize (PKCE)
+  Broker-->>Phone: Redirect to identity provider
+  Phone->>IdP: Sign in
+  IdP-->>Phone: Redirect to broker callback
+  Phone->>Broker: GET /device/oauth/callback
+  Broker->>Immich: POST /oauth/callback → session
   Broker->>Immich: POST /api-keys (approved permissions) → client key
   Broker->>Immich: POST /api-keys (apiKey.delete only) → revoker key
   Broker->>Immich: POST /auth/logout
@@ -49,6 +59,8 @@ sequenceDiagram
 
 Design choices worth calling out:
 
+- **No passwords.** The approval page has no credential fields; approving
+  starts Immich's OAuth sign-in, with PKCE.
 - **The app only ever gets the permissions the user approved.** Requests for
   `all`, key/session/auth management, admin, server config, jobs, libraries,
   plugins or workflows are rejected before the user even sees them (see
@@ -71,14 +83,18 @@ Design choices worth calling out:
 
 ```sh
 npm install
-npm run mock-immich                    # fake Immich on :2283, user demo@immich.app / demo
-IMMICH_URL=http://localhost:2283 OAUTH_ENABLED=true npm run dev   # broker on :3080
-REVOKE_AFTER=1 npm run demo            # prints a QR code; approve it in a browser
-npm test                               # 17 end-to-end tests against the mock
+npm run mock-immich                           # fake Immich on :2283
+IMMICH_URL=http://localhost:2283 npm run dev  # broker on :3080
+REVOKE_AFTER=1 npm run demo                   # prints a QR code; approve it in a browser
+npm test                                      # end-to-end tests against the mock
 ```
 
-Against a real Immich, point `IMMICH_URL` at it and set `PUBLIC_URL` to the
-address phones will use to reach the broker.
+The mock's fake identity provider signs everyone in as `demo@immich.app`
+without asking, so tapping Approve completes straight away.
+
+Against a real Immich, point `IMMICH_URL` at it, set `PUBLIC_URL` to the
+address phones will use to reach the broker, and allowlist the callback URL
+(next section).
 
 ## API for client apps
 
@@ -128,25 +144,25 @@ Always answers 200.
 | `DEVICE_CODE_TTL_SECONDS` | 600 | How long a QR code stays valid. |
 | `POLL_INTERVAL_SECONDS` | 5 | |
 | `SWEEP_INTERVAL_SECONDS` | 30 | How often expired keys are deleted. |
-| `OAUTH_ENABLED` | `false` | Offer OAuth sign-in on the approval page. |
 | `TRUST_PROXY` | `false` | Use `X-Forwarded-For` for rate limiting. |
 | `MAX_CODE_LOOKUP_FAILURES` | 20 | Wrong codes per IP per 10 minutes. |
-| `MAX_LOGIN_FAILURES` | 5 | Wrong passwords before a request is cancelled. |
 | `IMMICH_NATIVE_KEY_EXPIRY` | `false` | See below. |
 
-### OAuth sign-in
+### Identity provider setup
 
 The broker asks Immich to start OAuth with
-`redirectUri = PUBLIC_URL/device/oauth/callback`. That URI has to be added to
-the allowed redirect URIs in the identity provider, next to the ones Immich
-already needs.
+`redirectUri = PUBLIC_URL/device/oauth/callback`. Add that URI to the allowed
+redirect URIs of Immich's client in the identity provider, next to the ones
+Immich already needs. The broker logs a warning at startup if OAuth is off in
+Immich.
 
 ## Security notes
 
-- Users type their Immich password into the broker, so it should be deployed by
-  the Immich admin, behind HTTPS, ideally on the same domain as Immich. A broker
-  run by a third party would see passwords; that's the main reason this belongs
-  inside Immich long-term.
+- Users never type a password here, but for a moment the broker holds a full
+  Immich session (from the OAuth callback) before logging it out. It should be
+  deployed by the Immich admin, behind HTTPS, ideally on the same domain as
+  Immich. That trust requirement is the main reason this belongs inside Immich
+  long-term.
 - Device-flow phishing is a known risk with RFC 8628: an attacker starts a
   request and sends the victim the link. The approval page warns about this and
   shows the code so users can compare it with their screen.
@@ -163,7 +179,7 @@ missing feature:
 | Workaround in this PoC | What Immich could provide |
 |---|---|
 | Sweeper deletes keys on expiry; revoker key | `expiresAt` on API keys ([discussion #32325](https://github.com/immich-app/immich/discussions/32325)). Set `IMMICH_NATIVE_KEY_EXPIRY=true` once it exists: the broker sends `expiresAt` on both keys and Immich enforces expiry even if the broker is down. The field name is a guess and may need adjusting. |
-| Separate service, password typed into it | A device-authorization endpoint and approval screen in Immich's web app, reusing the existing session. |
+| Separate service with its own OAuth round trip, holding a session briefly | A device-authorization endpoint and approval screen in Immich's web app, reusing the session the user already has (and working without OIDC). |
 | Forbidden-permission list | A server-defined set of permissions third-party apps may request. |
 | Key name carries the client and expiry | "Connected apps" metadata on keys (client name, created via, expiry). |
 
@@ -176,5 +192,6 @@ behaviours should be confirmed on a live server:
 - deleting a nonexistent key returns 400 (`API Key not found`), which the broker
   treats as already deleted;
 - `Authorization: Bearer <accessToken>` works for `POST /api-keys` and
-  `POST /auth/logout` right after `POST /auth/login`;
-- OAuth `redirectUri` values other than Immich's own are accepted.
+  `POST /auth/logout` with the session returned by `POST /oauth/callback`;
+- Immich accepts an OAuth `redirectUri` other than its own, and passes the
+  PKCE challenge and `state` through as expected.

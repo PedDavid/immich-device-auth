@@ -20,12 +20,21 @@ const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
       port: info.port,
       publicUrl: config.publicUrl,
       immich: config.immichApiUrl,
-      oauth: config.oauthEnabled,
       nativeKeyExpiry: config.nativeKeyExpiry,
       grants: store.counts(),
     }),
   );
 });
+
+// Approval needs Immich's OAuth sign-in; warn early if it is off.
+immich
+  .getFeatures()
+  .then((features) => {
+    if (!features.oauth) {
+      console.warn(JSON.stringify({ message: 'OAuth is not enabled on this Immich server; nobody will be able to approve requests' }));
+    }
+  })
+  .catch((error) => console.warn(JSON.stringify({ message: 'could not reach Immich at startup', error: String(error) })));
 
 const shutdown = async () => {
   server.close();

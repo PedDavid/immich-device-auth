@@ -14,7 +14,7 @@ const harness = (mock: MockImmich, overrides: Partial<Config> = {}) => {
   process.env.IMMICH_URL = mock.url;
   process.env.PUBLIC_URL = PUBLIC_URL;
   process.env.DATABASE_PATH = ':memory:';
-  const config = { ...loadConfig(), oauthEnabled: true, ...overrides };
+  const config = { ...loadConfig(), ...overrides };
   const store = new GrantStore(':memory:');
   const immich = new ImmichClient(config.immichApiUrl);
   const grants = new GrantService(config, immich, store);
@@ -40,24 +40,25 @@ const harness = (mock: MockImmich, overrides: Partial<Config> = {}) => {
     return { status: res.status, json: (await res.json()) as Record<string, any> };
   };
 
-  /** Opens the approval page like the phone would and returns the hidden form fields. */
+  /** Opens the approval page like the phone would and returns the approve link and deny form fields. */
   const openApproval = async (verificationUriComplete: string) => {
     const url = new URL(verificationUriComplete);
     const res = await app.request(`${url.pathname}${url.search}`);
     const html = await res.text();
     const field = (name: string) => html.match(new RegExp(`name="${name}" value="([^"]*)"`))?.[1] ?? '';
-    return { status: res.status, html, code: field('code'), formToken: field('form_token') };
+    const approveHref = (html.match(/href="(\/device\/oauth\/start[^"]*)"/)?.[1] ?? '').replaceAll('&amp;', '&');
+    return { status: res.status, html, code: field('code'), formToken: field('form_token'), approveHref };
   };
 
-  const approve = async (verificationUriComplete: string, credentials = { email: 'demo@immich.app', password: 'demo' }) => {
+  /** Taps Approve, signs in at the (fake) identity provider, and follows the redirect back to the broker. */
+  const approve = async (verificationUriComplete: string) => {
     const page = await openApproval(verificationUriComplete);
-    const res = await form('/device/approve', {
-      code: page.code,
-      form_token: page.formToken,
-      decision: 'approve',
-      ...credentials,
-    });
-    return { status: res.status, html: await res.text() };
+    const start = await app.request(page.approveHref);
+    if (start.status !== 302) return { status: start.status, html: await start.text() };
+    const idp = await fetch(start.headers.get('location')!, { redirect: 'manual' });
+    const callback = new URL(idp.headers.get('location')!);
+    const done = await app.request(`${callback.pathname}${callback.search}`);
+    return { status: done.status, html: await done.text(), callback };
   };
 
   const immichGet = (path: string, apiKey: string) => fetch(`${mock.url}/api${path}`, { headers: { 'x-api-key': apiKey } });
@@ -74,7 +75,7 @@ describe('device authorization flow', () => {
     await mock.close();
   });
 
-  test('approve with password: client gets a scoped key, session is logged out', async () => {
+  test('approve via OAuth sign-in: client gets a scoped key, session is logged out', async () => {
     const h = harness(mock);
     const { status, json } = await h.requestCode();
     assert.equal(status, 200);
@@ -88,10 +89,12 @@ describe('device authorization flow', () => {
     assert.equal(page.status, 200);
     assert.match(page.html, /Test Frame/);
     assert.match(page.html, /album/);
+    assert.doesNotMatch(page.html, /type="password"/, 'the broker never asks for a password');
 
     const approved = await h.approve(json.verification_uri_complete);
     assert.equal(approved.status, 200);
     assert.match(approved.html, /All set/);
+    assert.equal(approved.callback!.origin + approved.callback!.pathname, `${PUBLIC_URL}/device/oauth/callback`);
 
     const token = await h.poll(json.device_code);
     assert.equal(token.status, 200);
@@ -135,7 +138,7 @@ describe('device authorization flow', () => {
     const h = harness(mock);
     const { json } = await h.requestCode();
     const page = await h.openApproval(json.verification_uri_complete);
-    const res = await h.form('/device/approve', { code: page.code, form_token: page.formToken, decision: 'deny' });
+    const res = await h.form('/device/deny', { code: page.code, form_token: page.formToken });
     assert.match(await res.text(), /Request denied/);
     assert.equal((await h.poll(json.device_code)).json.error, 'access_denied');
     assert.equal(mock.keys.size, 0);
@@ -159,30 +162,40 @@ describe('device authorization flow', () => {
     assert.equal(json.token_ttl, 600);
   });
 
-  test('a forged or stale approval form is refused', async () => {
+  test('a forged approve link or deny form is refused', async () => {
     const h = harness(mock);
     const { json } = await h.requestCode();
     const page = await h.openApproval(json.verification_uri_complete);
-    const res = await h.form('/device/approve', {
-      code: page.code,
-      form_token: 'forged',
-      decision: 'approve',
-      email: 'demo@immich.app',
-      password: 'demo',
-    });
-    assert.equal(res.status, 400);
+    const forgedApprove = await h.app.request(
+      `/device/oauth/start?code=${encodeURIComponent(page.code)}&form_token=forged`,
+    );
+    assert.equal(forgedApprove.status, 400);
+    const forgedDeny = await h.form('/device/deny', { code: page.code, form_token: 'forged' });
+    assert.equal(forgedDeny.status, 400);
+    assert.equal((await h.poll(json.device_code)).json.error, 'authorization_pending');
     assert.equal(mock.keys.size, 0);
   });
 
-  test('wrong password is retried, then the request is cancelled', async () => {
-    const h = harness(mock, { maxLoginFailures: 2 });
+  test('cancelling at the identity provider leaves the request pending', async () => {
+    const h = harness(mock);
     const { json } = await h.requestCode();
-    const first = await h.approve(json.verification_uri_complete, { email: 'demo@immich.app', password: 'wrong' });
-    assert.equal(first.status, 401);
-    assert.match(first.html, /Wrong email or password/);
-    const second = await h.approve(json.verification_uri_complete, { email: 'demo@immich.app', password: 'wrong' });
-    assert.match(second.html, /Too many failed sign-ins/);
-    assert.equal((await h.poll(json.device_code)).json.error, 'access_denied');
+    const page = await h.openApproval(json.verification_uri_complete);
+    const start = await h.app.request(page.approveHref);
+    const state = new URL(start.headers.get('location')!).searchParams.get('state')!;
+    const cancelled = await h.app.request(`/device/oauth/callback?error=access_denied&state=${encodeURIComponent(state)}`);
+    assert.equal(cancelled.status, 400);
+    assert.match(await cancelled.text(), /Sign-in was cancelled/);
+    assert.equal((await h.poll(json.device_code)).json.error, 'authorization_pending');
+    // The user can still approve afterwards.
+    assert.match((await h.approve(json.verification_uri_complete)).html, /All set/);
+    assert.equal((await h.poll(json.device_code)).status, 200);
+    mock.keys.clear();
+  });
+
+  test('an unknown OAuth state is refused', async () => {
+    const h = harness(mock);
+    const res = await h.app.request('/device/oauth/callback?code=x&state=unknown');
+    assert.equal(res.status, 400);
   });
 
   test('unknown codes are rate limited per IP', async () => {
@@ -267,31 +280,6 @@ describe('device authorization flow', () => {
     assert.equal(mock.keys.size, 0);
   });
 
-  test('approve with OAuth sign-in', async () => {
-    const h = harness(mock);
-    const { json } = await h.requestCode();
-    const page = await h.openApproval(json.verification_uri_complete);
-    assert.match(page.html, /Approve with OAuth sign-in/);
-
-    const start = await h.app.request(
-      `/device/oauth/start?code=${encodeURIComponent(page.code)}&form_token=${encodeURIComponent(page.formToken)}`,
-    );
-    assert.equal(start.status, 302);
-
-    // Follow the identity provider's redirect back to the broker.
-    const idp = await fetch(start.headers.get('location')!, { redirect: 'manual' });
-    const callback = new URL(idp.headers.get('location')!);
-    assert.equal(callback.origin + callback.pathname, `${PUBLIC_URL}/device/oauth/callback`);
-    const done = await h.app.request(`${callback.pathname}${callback.search}`);
-    assert.match(await done.text(), /All set/);
-
-    const token = await h.poll(json.device_code);
-    assert.equal(token.status, 200);
-    assert.equal((await h.immichGet('/albums', token.json.access_token)).status, 200);
-    assert.equal(mock.sessions.size, 0);
-    mock.keys.clear();
-  });
-
   test('pages are protected against framing and caching', async () => {
     const h = harness(mock);
     const res = await h.app.request('/device');
@@ -307,6 +295,22 @@ describe('device authorization flow', () => {
     const res = await h.app.request(`${qr.pathname}${qr.search}`);
     assert.equal(res.headers.get('content-type'), 'image/svg+xml');
     assert.match(await res.text(), /^<svg/);
+  });
+});
+
+describe('Immich without OAuth', () => {
+  test('approving shows a clear error instead of signing in', async () => {
+    const mock = await startMockImmich({ oauth: false });
+    try {
+      const h = harness(mock);
+      const { json } = await h.requestCode();
+      const approved = await h.approve(json.verification_uri_complete);
+      assert.equal(approved.status, 502);
+      assert.match(approved.html, /Is OAuth enabled on this Immich server/);
+      assert.equal(mock.keys.size, 0);
+    } finally {
+      await mock.close();
+    }
   });
 });
 

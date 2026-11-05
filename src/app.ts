@@ -96,7 +96,7 @@ export const createApp = ({ config, immich, grants, sweeper }: Deps) => {
     else entry.count++;
   };
 
-  /** Logs in, mints the grant, then ends the login session so no full-access credential outlives this request. */
+  /** Mints the grant with the fresh login, then ends that session so no full-access credential outlives this request. */
   const approve = async (request: DeviceRequest, login: LoginResult) => {
     const session = { kind: 'session' as const, token: login.accessToken };
     try {
@@ -246,54 +246,24 @@ export const createApp = ({ config, immich, grants, sweeper }: Deps) => {
       recordLookupFailure(ip);
       return c.html(enterCodePage('That code is not valid or has expired. Check the code on your device.'), 404);
     }
-    return c.html(approvePage(request, { oauthEnabled: config.oauthEnabled }));
+    return c.html(approvePage(request));
   });
 
-  app.post('/device/approve', async (c) => {
+  app.post('/device/deny', async (c) => {
     const body = await c.req.parseBody();
     const request = devices.byUser(str(body.code) ?? '');
     if (!request || request.status !== 'pending' || str(body.form_token) !== request.formToken) {
       return c.html(resultPage('invalid'), 400);
     }
-
-    if (str(body.decision) === 'deny') {
-      request.status = 'denied';
-      return c.html(resultPage('denied'));
-    }
-
-    const email = str(body.email)?.trim() ?? '';
-    const password = str(body.password) ?? '';
-    let login: LoginResult;
-    try {
-      login = await immich.login(email, password);
-    } catch (error) {
-      if (error instanceof ImmichError && (error.status === 401 || error.status === 400)) {
-        request.loginFailures++;
-        if (request.loginFailures >= config.maxLoginFailures) {
-          request.status = 'denied';
-          return c.html(resultPage('invalid', 'Too many failed sign-ins. Start again on your device.'), 401);
-        }
-        return c.html(
-          approvePage(request, { oauthEnabled: config.oauthEnabled, email, error: 'Wrong email or password.' }),
-          401,
-        );
-      }
-      console.error('login failed', error);
-      return c.html(approvePage(request, { oauthEnabled: config.oauthEnabled, email, error: 'Could not reach Immich. Try again.' }), 502);
-    }
-
-    try {
-      await approve(request, login);
-    } catch (error) {
-      console.error('issuing grant failed', error);
-      const detail = error instanceof ImmichError ? error.message : 'Unexpected error';
-      return c.html(approvePage(request, { oauthEnabled: config.oauthEnabled, email, error: `Immich refused: ${detail}` }), 502);
-    }
-    return c.html(resultPage('approved'));
+    request.status = 'denied';
+    return c.html(resultPage('denied'));
   });
 
+  /**
+   * "Approve" on the approval page: the user signs in to Immich through its
+   * OAuth/OIDC provider, so their password never reaches this broker.
+   */
   app.get('/device/oauth/start', async (c) => {
-    if (!config.oauthEnabled) return c.notFound();
     const request = devices.byUser(c.req.query('code') ?? '');
     if (!request || request.status !== 'pending' || c.req.query('form_token') !== request.formToken) {
       return c.html(resultPage('invalid'), 400);
@@ -310,25 +280,36 @@ export const createApp = ({ config, immich, grants, sweeper }: Deps) => {
       return c.redirect(url, 302);
     } catch (error) {
       console.error('starting OAuth failed', error);
-      return c.html(approvePage(request, { oauthEnabled: true, error: 'OAuth sign-in is not available on this Immich server.' }), 502);
+      return c.html(approvePage(request, { error: 'Could not start sign-in. Is OAuth enabled on this Immich server?' }), 502);
     }
   });
 
   app.get('/device/oauth/callback', async (c) => {
-    if (!config.oauthEnabled) return c.notFound();
     const state = c.req.query('state') ?? '';
     const request = devices.byOAuth(state);
     if (!request?.oauth || request.status !== 'pending') return c.html(resultPage('invalid'), 400);
 
+    // The identity provider refused or the user cancelled at the provider.
+    if (c.req.query('error')) {
+      return c.html(approvePage(request, { error: 'Sign-in was cancelled. You can try again or deny.' }), 400);
+    }
+
     // Immich expects the full callback URL as the identity provider sent it.
     const incoming = new URL(c.req.url);
     const callbackUrl = `${config.publicUrl}/device/oauth/callback${incoming.search}`;
+    let login: LoginResult;
     try {
-      const login = await immich.finishOAuth({ url: callbackUrl, state, codeVerifier: request.oauth.codeVerifier });
+      login = await immich.finishOAuth({ url: callbackUrl, state, codeVerifier: request.oauth.codeVerifier });
+    } catch (error) {
+      console.error('OAuth sign-in failed', error);
+      return c.html(approvePage(request, { error: 'Sign-in failed. Try again.' }), 502);
+    }
+    try {
       await approve(request, login);
     } catch (error) {
-      console.error('OAuth approval failed', error);
-      return c.html(approvePage(request, { oauthEnabled: true, error: 'OAuth sign-in failed. Try again.' }), 502);
+      console.error('issuing grant failed', error);
+      const detail = error instanceof ImmichError ? error.message : 'Unexpected error';
+      return c.html(approvePage(request, { error: `Immich refused: ${detail}` }), 502);
     }
     return c.html(resultPage('approved'));
   });

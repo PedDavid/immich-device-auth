@@ -28,7 +28,6 @@ export type DeviceRequest = {
   expiresAt: number;
   interval: number;
   lastPollAt: number;
-  loginFailures: number;
   status: 'pending' | 'approved' | 'denied' | 'consumed';
   /** Anti-CSRF token embedded in the approval form. */
   formToken: string;
@@ -69,7 +68,6 @@ export class DeviceRequests {
       expiresAt: now + params.lifetimeSeconds * 1000,
       interval: params.interval,
       lastPollAt: 0,
-      loginFailures: 0,
       status: 'pending',
       formToken: newToken(),
     };

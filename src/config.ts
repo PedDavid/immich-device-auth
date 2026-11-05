@@ -83,14 +83,10 @@ export const loadConfig = () => {
     maxTtl,
     /** How often expired grants are checked and revoked. */
     sweepInterval: int('SWEEP_INTERVAL_SECONDS', 30),
-    /** Offer "Sign in with OAuth" on the approval page (needs an allowlisted redirect URI). */
-    oauthEnabled: bool('OAUTH_ENABLED', false),
     /** Read the client IP from X-Forwarded-For (only behind a reverse proxy you control). */
     trustProxy: bool('TRUST_PROXY', false),
     /** Failed code lookups allowed per IP per 10 minutes, to stop guessing user codes. */
     maxCodeLookupFailures: int('MAX_CODE_LOOKUP_FAILURES', 20),
-    /** Failed sign-ins allowed per device request before it is cancelled. */
-    maxLoginFailures: int('MAX_LOGIN_FAILURES', 5),
     /**
      * Forward-looking switch for when Immich supports expiring API keys
      * (discussion #32325). When on, the broker sends `expiresAt` and lets Immich

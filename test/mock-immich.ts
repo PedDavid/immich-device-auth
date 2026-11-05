@@ -5,7 +5,8 @@
  * validates DTOs strictly), API-key auth is limited to the key's permissions,
  * and logged-out sessions stop working.
  *
- * Run standalone with: npm run mock-immich   (user: demo@immich.app / demo)
+ * Run standalone with: npm run mock-immich
+ * Its fake OAuth provider signs everyone in as demo@immich.app without asking.
  */
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
@@ -23,9 +24,12 @@ export type MockImmich = {
   close: () => Promise<void>;
 };
 
-const USERS = [{ id: 'user-1', email: 'demo@immich.app', password: 'demo', name: 'Demo User' }];
+const USERS = [{ id: 'user-1', email: 'demo@immich.app', name: 'Demo User' }];
 
-export const startMockImmich = async (options: { port?: number; nativeExpiry?: boolean } = {}): Promise<MockImmich> => {
+export const startMockImmich = async (
+  options: { port?: number; nativeExpiry?: boolean; oauth?: boolean } = {},
+): Promise<MockImmich> => {
+  const oauthEnabled = options.oauth ?? true;
   const keys = new Map<string, Key>();
   const sessions = new Map<string, string>(); // token -> userId
   const oauthCodes = new Map<string, string>(); // code -> userId
@@ -65,12 +69,7 @@ export const startMockImmich = async (options: { port?: number; nativeExpiry?: b
     };
   };
 
-  app.post('/api/auth/login', async (c) => {
-    const { email, password } = await c.req.json();
-    const user = USERS.find((u) => u.email === email && u.password === password);
-    if (!user) return fail(c, 401, 'Incorrect email or password');
-    return c.json(loginResponse(user.id), 201);
-  });
+  app.get('/api/server/features', (c) => c.json({ oauth: oauthEnabled, oauthAutoLaunch: false, passwordLogin: true }));
 
   app.post('/api/auth/logout', (c) => {
     const bearer = c.req.header('authorization')?.replace(/^Bearer /, '');
@@ -128,6 +127,7 @@ export const startMockImmich = async (options: { port?: number; nativeExpiry?: b
 
   // Fake OIDC: /api/oauth/authorize points at a fake IdP page that immediately redirects back.
   app.post('/api/oauth/authorize', async (c) => {
+    if (!oauthEnabled) return fail(c, 400, 'OAuth is not enabled');
     const { redirectUri, state: oauthState } = await c.req.json();
     const url = new URL('/idp/authorize', c.req.url);
     url.searchParams.set('redirect_uri', redirectUri);
@@ -174,5 +174,5 @@ export const startMockImmich = async (options: { port?: number; nativeExpiry?: b
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const mock = await startMockImmich({ port: Number(process.env.PORT ?? 2283) });
-  console.log(`Mock Immich on ${mock.url} (sign in as demo@immich.app / demo)`);
+  console.log(`Mock Immich on ${mock.url} (fake OAuth signs in as demo@immich.app)`);
 }
