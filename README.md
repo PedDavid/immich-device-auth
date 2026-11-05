@@ -3,6 +3,14 @@
 Proof of concept: let third-party Immich apps get a **scoped, expiring** API key
 by showing a QR code, instead of asking users to paste a never-expiring key.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/approval-dark.png">
+    <img src="docs/approval-light.png" alt="Approval page on a phone: Allow Kitchen Photo Frame? It lists album read, asset view and download, timeline read, for 1 day, with sign-in fields and Deny and Approve buttons" width="300">
+  </picture>
+  <br><em>What the user sees after scanning the QR code</em>
+</p>
+
 It's a small service deployed next to Immich that implements the OAuth 2.0
 device authorization grant ([RFC 8628](https://www.rfc-editor.org/rfc/rfc8628)),
 the flow TVs and CLIs use for "scan this code to sign in". It needs no changes
